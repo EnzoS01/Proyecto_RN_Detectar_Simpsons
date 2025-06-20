@@ -1,63 +1,88 @@
 import torch
 import torch.nn as nn
-from torchvision.models import densenet121
+import torch.nn.functional as F
+from torchvision import models
+import pandas as pd
+from PIL import Image
+from torchvision import transforms
+from collections import defaultdict
+import os
 
-# Lista de clases (labels)
-CLASSES = [
-    'abraham_grampa_simpson',
-    'agnes_skinner',
-    'apu_nahasapeemapetilon',
-    'bart_simpson',
-    'barney_gumble',
-    'carl_carlson',
-    'charles_montgomery_burns',
-    'chief_wiggum',
-    'cletus_spuckler',
-    'comic_book_guy',
-    'disco_stu',
-    'edna_krabappel',
-    'fat_tony',
-    'gil',
-    'groundskeeper_willie',
-    'homer_simpson',
-    'kent_brockman',
-    'krusty_the_clown',
-    'lenny_leonard',
-    'lisa_simpson',
-    'lionel_hutz',
-    'maggie_simpson',
-    'marge_simpson',
-    'martin_prince',
-    'mayor_quimby',
-    'milhouse_van_houten',
-    'miss_hoover',
-    'moe_szyslak',
-    'nelson_muntz',
-    'ned_flanders',
-    'otto_mann',
-    'patty_bouvier',
-    'principal_skinner',
-    'professor_john_frink',
-    'ralph_wiggum',
-    'rainier_wolfcastle',
-    'selma_bouvier',
-    'sideshow_bob',
-    'sideshow_mel',
-    'snake_jailbird',
-    'troy_mcclure',
-    'waylon_smithers'
-]
+# ---------- Modelo con extracción de embedding ----------
 
-# Diccionario índice 
-idx_to_class = {i: label for i, label in enumerate(CLASSES)}
+class EmbeddingNet(nn.Module):
+    def __init__(self, backbone='densenet121', embedding_size=128):
+        super().__init__()
+        self.embedding_size = embedding_size
 
-def load_model(path):
-    model = densenet121(weights=None)
-    model.classifier = nn.Linear(model.classifier.in_features, len(CLASSES))
-    model.load_state_dict(torch.load(path, map_location=torch.device('cpu')))
-    return model, idx_to_class
+        if backbone == 'densenet121':
+            base_model = models.densenet121(weights=None)
+            num_features = base_model.classifier.in_features
+            base_model.classifier = nn.Identity()
+            self.backbone = base_model
+        else:
+            raise ValueError("Backbone no soportado")
 
-def predict_character(model, img_tensor, idx_to_class):
-    outputs = model(img_tensor)
-    _, predicted_idx = torch.max(outputs, 1)
-    return idx_to_class.get(predicted_idx.item(), "Desconocido")
+        self.embedding = nn.Linear(num_features, embedding_size)
+
+    def forward(self, x):
+        x = self.backbone(x)
+        x = self.embedding(x)
+        x = F.normalize(x, p=2, dim=1)
+        return x
+
+# ---------- Cargar modelo entrenado ----------
+
+def load_trained_model(model_path, device='cpu', embedding_size=128):
+    model = EmbeddingNet(backbone='densenet121', embedding_size=embedding_size)
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.to(device)
+    model.eval()
+    return model
+
+# ---------- Obtener embedding de una imagen ----------
+
+def get_image_embedding(model, image_tensor, device='cpu'):
+    model.eval()
+    image_tensor = image_tensor.to(device)
+    with torch.no_grad():
+        embedding = model(image_tensor.unsqueeze(0))
+    return embedding.squeeze(0)
+
+# ---------- Cargar imágenes desde CSV y generar embeddings por clase ----------
+
+def compute_reference_embeddings(model, annotation_csv, transform, device='cpu', samples_per_class=5):
+    df = pd.read_csv(annotation_csv)
+    class_embeddings = defaultdict(list)
+
+    for label in df['label'].unique():
+        class_samples = df[df['label'] == label].sample(n=min(samples_per_class, len(df[df['label'] == label])), random_state=42)
+        for _, row in class_samples.iterrows():
+            path = row['path']
+            if not os.path.exists(path):
+                continue
+            image = Image.open(path).convert('RGB')
+            image = transform(image)
+            embedding = get_image_embedding(model, image, device)
+            class_embeddings[label].append(embedding)
+
+    # Calcular promedio por clase
+    reference_embeddings = {label: torch.stack(embeds).mean(0) for label, embeds in class_embeddings.items()}
+    return reference_embeddings
+
+# ---------- Predecir clase comparando con los embeddings de referencia ----------
+
+def predict_character(model, image_tensor, reference_embeddings, device='cpu'):
+    image_tensor = image_tensor.to(device)
+    image_embedding = get_image_embedding(model, image_tensor, device)
+
+    best_class = None
+    best_similarity = float('-inf')
+
+    for label, ref_embedding in reference_embeddings.items():
+        similarity = F.cosine_similarity(image_embedding, ref_embedding, dim=0).item()
+        if similarity > best_similarity:
+            best_similarity = similarity
+            best_class = label
+
+    return best_class
