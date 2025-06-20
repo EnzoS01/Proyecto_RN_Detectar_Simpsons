@@ -1,29 +1,42 @@
 import streamlit as st
-from PIL import Image
 import torch
 from torchvision import transforms
-from utils import load_model, predict_character
+from PIL import Image
+from utils import load_trained_model, predict_character
 
-model, idx_to_class = load_model('modelo.pth')
-model.eval()
+# Configuración general
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+MODEL_PATH = 'modelo.pth'
+EMBEDDINGS_PATH = 'data/reference_embeddings.pt'  # archivo generado previamente
 
-# Se hace la misma transformación que en el entrenamiento 
+# Cargar modelo entrenado
+st.info("Cargando modelo...")
+model = load_trained_model(MODEL_PATH, device=DEVICE)
+
+# Cargar embeddings de referencia
+st.info("Cargando embeddings de referencia...")
+reference_embeddings = torch.load(EMBEDDINGS_PATH, map_location=DEVICE)
+
+# Preprocesamiento de imágenes (debe coincidir con entrenamiento)
 transform = transforms.Compose([
     transforms.Resize((128, 128)),
     transforms.ToTensor(),
     transforms.Normalize([0.5]*3, [0.5]*3)
 ])
 
-st.title("Detector de Personajes de Los Simpsons utilizando pérdida de las trillizas")
+# Interfaz
+st.title("🔍 Clasificador de Personajes de Los Simpsons (vía embeddings)")
 
-uploaded_file = st.file_uploader("Subí una imagen", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("Subí una imagen de un personaje", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file).convert("RGB")
     st.image(image, caption="Imagen subida", use_column_width=True)
 
-    tensor = transform(image).unsqueeze(0)
-    with torch.no_grad():
-        prediction = predict_character(model, tensor, idx_to_class)
+    # Preprocesar imagen
+    image_tensor = transform(image)
 
-    st.success(f"Personaje detectado: **{prediction}**")
+    # Predecir personaje
+    prediction = predict_character(model, image_tensor, reference_embeddings, device=DEVICE)
+
+    st.success(f"🎯 Personaje predicho: **{prediction}**")
