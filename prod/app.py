@@ -6,7 +6,7 @@ from utils import load_trained_model, predict_character
 
 # Configuración general
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-MODEL_PATH = 'modelo.pth'
+MODEL_PATH = 'prod/modelo.pth'
 EMBEDDINGS_PATH = 'data/reference_embeddings.pt'  # archivo generado previamente
 
 # Cargar modelo entrenado
